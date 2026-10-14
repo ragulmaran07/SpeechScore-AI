@@ -42,7 +42,11 @@ def get_recording_audio(recording_id: str):
             raise HTTPException(status_code=404, detail="Audio file on disk not found")
         
         media_type = "audio/wav"
-        if audio_path.suffix.lower() == ".mp3":
+        if audio_path.suffix.lower() in [".mp4", ".m4v"]:
+            media_type = "video/mp4"
+        elif audio_path.suffix.lower() == ".m4a":
+            media_type = "audio/mp4"
+        elif audio_path.suffix.lower() == ".mp3":
             media_type = "audio/mpeg"
         elif audio_path.suffix.lower() == ".ogg":
             media_type = "audio/ogg"
@@ -60,10 +64,10 @@ async def upload_recording(
 ):
     # Validate extension
     file_ext = Path(file.filename).suffix.lower()
-    if file_ext not in [".wav", ".mp3", ".ogg", ".flac"]:
+    if file_ext not in [".wav", ".mp3", ".ogg", ".flac", ".mp4", ".m4a", ".mov", ".m4v"]:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported audio format '{file_ext}'. Please upload a standard WAV, FLAC, or OGG file."
+            detail=f"Unsupported media format '{file_ext}'. Supported formats: MP4, WAV, FLAC, OGG, M4A, MP3."
         )
 
     # Save to disk

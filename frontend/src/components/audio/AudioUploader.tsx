@@ -37,7 +37,7 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
 
   const handleUpload = async () => {
     if (!file) {
-      setError('Please select an audio file (WAV, FLAC, or OGG).');
+      setError('Please select an audio or video file (MP4, WAV, FLAC, OGG, MP3).');
       return;
     }
     if (!title.trim()) {
@@ -101,11 +101,11 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
               {file ? file.name : 'Click or drop audio file here'}
             </span>
             <span className="text-[11px] text-slate-400 mt-0.5">
-              Supports WAV, FLAC, OGG (Uncompressed PCM recommended)
+              Supports MP4 (video/audio), WAV, FLAC, OGG, MP3
             </span>
             <input
               type="file"
-              accept=".wav,.mp3,.ogg,.flac,audio/*"
+              accept=".wav,.mp3,.ogg,.flac,.mp4,.m4a,audio/*,video/mp4"
               onChange={handleFileChange}
               className="hidden"
             />

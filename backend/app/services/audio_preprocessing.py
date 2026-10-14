@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
 
 try:
+    import av
+    HAS_AV = True
+except ImportError:
+    HAS_AV = False
+
+try:
     import soundfile as sf
     HAS_SOUNDFILE = True
 except ImportError:
@@ -21,39 +27,80 @@ except ImportError:
 class AudioPreprocessingError(Exception):
     pass
 
+def decode_media_with_av(path: Path, target_sr: int = 16000) -> Tuple[Optional[np.ndarray], Optional[int], int]:
+    """
+    Decodes audio track from MP4 video or audio container using PyAV (FFmpeg).
+    Returns (audio_array, sample_rate, original_channels).
+    """
+    if not HAS_AV:
+        return None, None, 1
+        
+    try:
+        container = av.open(str(path))
+        audio_stream = next((s for s in container.streams if s.type == 'audio'), None)
+        if not audio_stream:
+            return None, None, 1
+            
+        resampler = av.AudioResampler(
+            format='fltp',
+            layout='mono',
+            rate=target_sr
+        )
+        
+        chunks = []
+        for frame in container.decode(audio_stream):
+            resampled_frames = resampler.resample(frame)
+            for rf in resampled_frames:
+                chunks.append(rf.to_ndarray())
+                
+        if not chunks:
+            return None, None, 1
+            
+        y = np.concatenate(chunks, axis=1)[0].astype(np.float32)
+        channels = getattr(audio_stream, 'channels', 1) or 1
+        return y, target_sr, channels
+    except Exception:
+        return None, None, 1
+
 def load_and_preprocess_audio(
     file_path: str,
     target_sr: int = 16000
 ) -> Tuple[np.ndarray, int, float, Dict[str, Any]]:
     """
-    Loads an audio file, converts it to mono, resamples to target_sr,
-    and returns (audio_array, sample_rate, duration, metadata).
-    Supports WAV, FLAC, OGG, and common audio formats.
+    Loads an audio or video file, extracts the audio track, converts to mono,
+    resamples to target_sr, and returns (audio_array, sample_rate, duration, metadata).
+    Supports MP4, M4A, MOV, WAV, FLAC, OGG, and MP3.
     """
     path = Path(file_path)
     if not path.exists():
-        raise AudioPreprocessingError(f"Audio file not found: {file_path}")
+        raise AudioPreprocessingError(f"Audio/Video file not found: {file_path}")
     
     file_size_bytes = path.stat().st_size
     if file_size_bytes < 100:
-        raise AudioPreprocessingError("Audio file is empty or corrupted (file size too small).")
+        raise AudioPreprocessingError("File is empty or corrupted (file size too small).")
     
     y = None
     sr = None
     channels = 1
+    file_ext = path.suffix.lower()
     
-    # Attempt 1: SoundFile
-    if HAS_SOUNDFILE:
+    # Attempt 1: If MP4/M4A/MOV or video container, prioritize PyAV (FFmpeg audio stream demuxer)
+    if file_ext in [".mp4", ".m4a", ".mov", ".m4v", ".mkv"]:
+        y, sr, channels = decode_media_with_av(path, target_sr)
+        if y is None and not HAS_AV:
+            raise AudioPreprocessingError("MP4 video/audio decoding requires PyAV. Please install av.")
+            
+    # Attempt 2: SoundFile (for WAV, FLAC, OGG)
+    if y is None and HAS_SOUNDFILE:
         try:
             data, native_sr = sf.read(str(path), always_2d=True)
             sr = native_sr
-            # Convert to mono by averaging channels
             y = np.mean(data, axis=1).astype(np.float32)
             channels = data.shape[1]
         except Exception:
             y = None
             
-    # Attempt 2: Librosa
+    # Attempt 3: Librosa
     if y is None and HAS_LIBROSA:
         try:
             data, native_sr = librosa.load(str(path), sr=None, mono=True)
@@ -62,8 +109,12 @@ def load_and_preprocess_audio(
         except Exception:
             y = None
             
-    # Attempt 3: Standard wave module (pure python WAV)
-    if y is None and path.suffix.lower() == ".wav":
+    # Attempt 4: PyAV fallback for any remaining media format
+    if y is None and HAS_AV:
+        y, sr, channels = decode_media_with_av(path, target_sr)
+
+    # Attempt 5: Standard wave module (pure python uncompressed WAV)
+    if y is None and file_ext == ".wav":
         try:
             with wave.open(str(path), "rb") as wf:
                 native_sr = wf.getframerate()
@@ -93,11 +144,13 @@ def load_and_preprocess_audio(
                 y = y.astype(np.float32)
                 sr = native_sr
                 channels = n_channels
-        except Exception as e:
+        except Exception:
             y = None
 
     if y is None or sr is None:
-        raise AudioPreprocessingError(f"Could not decode audio file {path.name}. Supported formats: uncompressed WAV, FLAC, OGG.")
+        raise AudioPreprocessingError(
+            f"Could not decode audio from {path.name}. Supported formats: MP4 (video/audio), WAV, FLAC, OGG, M4A, MP3."
+        )
 
     # Check for empty / near zero length
     if len(y) == 0:
@@ -110,7 +163,6 @@ def load_and_preprocess_audio(
     # Resample to target_sr if different
     if sr != target_sr:
         num_target_samples = int(round(len(y) * float(target_sr) / sr))
-        # Use scipy resample
         y_resampled = scipy.signal.resample(y, num_target_samples).astype(np.float32)
         y = y_resampled
         sr = target_sr
@@ -118,13 +170,14 @@ def load_and_preprocess_audio(
     # Check for silence (near zero RMS)
     rms = float(np.sqrt(np.mean(y**2)))
     if rms < 1e-4:
-        raise AudioPreprocessingError("Audio recording is virtually silent. Please upload a clear vocal recording.")
+        raise AudioPreprocessingError("Recording audio track is virtually silent. Please upload a recording with audible speech.")
 
     # Peak amplitude and relative normalization without destroying dynamics
     max_abs = float(np.max(np.abs(y)))
     
     metadata = {
         "file_name": path.name,
+        "format": file_ext.replace(".", "").upper(),
         "original_file_size_bytes": file_size_bytes,
         "sample_rate": sr,
         "channels_original": channels,
